@@ -20,6 +20,10 @@ const float BLINK_PLATEAU = 0.8;   // higher = longer fully-visible/fully-hidden
 const float BG_OPACITY = 0.92;     // your background-opacity (used to keep text visible over a block cursor)
 const float HOLLOW_THICKNESS = 1.5; // outline width in pixels when unfocused
 
+// --- GLIDE CONFIGURATION (the cursor slides between cells instead of jumping, e.g. while typing) ---
+const float GLIDE_ENABLED = 1.0;
+const float GLIDE_DURATION = 0.09; // seconds per move; higher = floatier
+
 // --- TRAIL SELECTION (1.0 = on, 0.0 = off; they are drawn on top of each other) ---
 const float WARP_ENABLED = 1.0;   // Neovide-like warp (corners jump at different speeds)
 const float SWEEP_ENABLED = 1.0;  // shrinking parallelogram from the previous position
@@ -417,8 +421,17 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
         newColor = mix(newColor, vec4(TRAIL_COLOR.rgb, newColor.a), TRAIL_COLOR.a * antialising(sdfTail, TAIL_BLUR));
     }
 
-    // punch hole on the trails, so the current cursor is drawn on top
-    newColor = mix(newColor, fragColor, step(sdfCurrentCursor, 0.));
+    // cursor rectangle, gliding from the previous position to the current one
+    float sdfCursor = sdfCurrentCursor;
+    if (GLIDE_ENABLED > 0.5 && dot(previousCursor.zw, previousCursor.zw) > 0.0) {
+        float glide = easeCubic(clamp(sinceMove / GLIDE_DURATION, 0.0, 1.0));
+        vec2 glideCenter = mix(centerCP, centerCC, glide);
+        vec2 glideHalf = mix(previousCursor.zw, currentCursor.zw, glide) * 0.5;
+        sdfCursor = getSdfRectangle(vu, glideCenter, glideHalf);
+    }
+
+    // punch hole on the trails, so the cursor is drawn on top
+    newColor = mix(newColor, fragColor, step(sdfCursor, 0.));
 
     // --- CURSOR (drawn by the shader, native cursor is hidden via cursor-opacity = 0) ---
     bool isHollow = (iFocus == 0) || (iCurrentCursorStyle == CURSORSTYLE_BLOCK_HOLLOW);
@@ -439,13 +452,13 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
 
         if (isHollow) {
             float th = normalize(vec2(HOLLOW_THICKNESS), 0.).x;
-            float ring = abs(sdfCurrentCursor + th * 0.5) - th * 0.5;
+            float ring = abs(sdfCursor + th * 0.5) - th * 0.5;
             coverage = antialising(ring, 1.0);
         } else {
-            coverage = antialising(sdfCurrentCursor, 1.0);
+            coverage = antialising(sdfCursor, 1.0);
             // keep the glyph under a block cursor visible
             if (iCurrentCursorStyle == CURSORSTYLE_BLOCK) {
-                float inside = 1.0 - step(0.0, sdfCurrentCursor);
+                float inside = 1.0 - step(0.0, sdfCursor);
                 textMask = smoothstep(min(BG_OPACITY, 0.999), 1.0, texture(iChannel0, fragCoord.xy / iResolution.xy).a) * inside;
             }
         }
