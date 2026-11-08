@@ -20,7 +20,24 @@ const float BLINK_PLATEAU = 0.8;   // higher = longer fully-visible/fully-hidden
 const float BG_OPACITY = 0.92;     // your background-opacity (used to keep text visible over a block cursor)
 const float HOLLOW_THICKNESS = 1.5; // outline width in pixels when unfocused
 
-// --- TRAIL CONFIGURATION ---
+// --- TRAIL SELECTION (1.0 = on, 0.0 = off; they are drawn on top of each other) ---
+const float WARP_ENABLED = 1.0;   // Neovide-like warp (corners jump at different speeds)
+const float SWEEP_ENABLED = 1.0;  // shrinking parallelogram from the previous position
+const float TAIL_ENABLED = 1.0;   // kitty-like comet tail
+
+// --- SWEEP CONFIGURATION ---
+const float SWEEP_DURATION = 0.2;
+const float SWEEP_LENGTH = 0.5;
+const float SWEEP_BLUR = 2.0;
+const float SWEEP_THRESHOLD_MIN_DISTANCE = 1.5; // in cursor heights
+
+// --- TAIL CONFIGURATION ---
+const float TAIL_DURATION = 0.09;
+const float TAIL_MAX_LENGTH = 0.2;
+const float TAIL_BLUR = 2.0;
+const float TAIL_THRESHOLD_MIN_DISTANCE = 1.5; // in cursor heights
+
+// --- WARP CONFIGURATION ---
 vec4 TRAIL_COLOR = vec4(sRGBToLinear(iCurrentCursorColor.rgb), iCurrentCursorColor.a); // for custom color: vec4(0.2, 0.6, 1.0, 0.5); (wrap in sRGBToLinear for correct brightness)
 const float DURATION = 0.2; // total animation time
 const float TRAIL_SIZE = 0.8; // 0.0 = all corners move together. 1.0 = max smear (leading corners jump instantly)
@@ -54,10 +71,10 @@ const float SPRING_DAMPING = 0.9;
 //     return 1.0 - (1.0 - x) * (1.0 - x);
 // }
 
-// // EaseOutCubic
-// float ease(float x) {
-//     return 1.0 - pow(1.0 - x, 3.0);
-// }
+// EaseOutCubic (used by sweep)
+float easeCubic(float x) {
+    return 1.0 - pow(1.0 - x, 3.0);
+}
 
 // // EaseOutQuart
 // float ease(float x) {
@@ -142,6 +159,25 @@ float getSdfConvexQuad(in vec2 p, in vec2 v1, in vec2 v2, in vec2 v3, in vec2 v4
     return s * sqrt(d);
 }
 
+float getSdfParallelogram(in vec2 p, in vec2 v0, in vec2 v1, in vec2 v2, in vec2 v3) {
+    float s = 1.0;
+    float d = dot(p - v0, p - v0);
+
+    d = seg(p, v0, v3, s, d);
+    d = seg(p, v1, v0, s, d);
+    d = seg(p, v2, v1, s, d);
+    d = seg(p, v3, v2, s, d);
+
+    return s * sqrt(d);
+}
+
+// 1.0 when the top-right/bottom-left corners are the leading ones, else 0.0
+float getTopVertexFlag(vec2 a, vec2 b) {
+    float condition1 = step(b.x, a.x) * step(a.y, b.y);
+    float condition2 = step(a.x, b.x) * step(b.y, a.y);
+    return 1.0 - max(condition1, condition2);
+}
+
 vec2 normalize(vec2 value, float isPosition) {
     return (value * 2.0 - (iResolution.xy * isPosition)) / iResolution.y;
 }
@@ -192,7 +228,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
 
     float baseProgress = iTime - iTimeCursorChange;
     
-    if (lineLength > minDist && baseProgress < DURATION - 0.001) {
+    if (WARP_ENABLED > 0.5 && lineLength > minDist && baseProgress < DURATION - 0.001) {
         // defining corners of cursors
 
         // Y (Height) with TRAIL_THICKNESS
@@ -315,11 +351,74 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
 
         // newColor.a to preserve the background alpha.
         newColor = mix(newColor, vec4(trail.rgb, newColor.a), finalAlpha);
-
-        // punch hole on the trail, so current cursor is drawn on top
-        newColor = mix(newColor, fragColor, step(sdfCurrentCursor, 0.));
-
     }
+
+    // --- SWEEP TRAIL ---
+    float sinceMove = iTime - iTimeCursorChange;
+    if (SWEEP_ENABLED > 0.5 && lineLength > currentCursor.w * SWEEP_THRESHOLD_MIN_DISTANCE && sinceMove < SWEEP_DURATION) {
+        float shrinkFactor = easeCubic(clamp(sinceMove / SWEEP_DURATION, 0.0, 1.0));
+
+        vec2 sDelta = abs(centerCC - centerCP);
+        float isStraightMove = max(step(sDelta.y, 0.001), step(sDelta.x, 0.001));
+
+        float topFlag = getTopVertexFlag(currentCursor.xy, previousCursor.xy);
+        float bottomFlag = 1.0 - topFlag;
+        vec2 v0 = vec2(currentCursor.x + currentCursor.z * topFlag, currentCursor.y - currentCursor.w);
+        vec2 v1 = vec2(currentCursor.x + currentCursor.z * bottomFlag, currentCursor.y);
+        vec2 v2_full = vec2(previousCursor.x + currentCursor.z * bottomFlag, previousCursor.y);
+        vec2 v3_full = vec2(previousCursor.x + currentCursor.z * topFlag, previousCursor.y - previousCursor.w);
+
+        vec2 v2_anim = mix(mix(v1, v2_full, SWEEP_LENGTH), v1, shrinkFactor);
+        vec2 v3_anim = mix(mix(v0, v3_full, SWEEP_LENGTH), v0, shrinkFactor);
+        float sdfDiag = getSdfParallelogram(vu, v0, v1, v2_anim, v3_anim);
+
+        vec2 minC = min(centerCP, centerCC);
+        vec2 maxC = max(centerCP, centerCC);
+        vec2 boxSizeFull = (maxC - minC) + currentCursor.zw;
+        vec2 boxCenterFull = (minC + maxC) * 0.5;
+        vec2 animSize = mix(mix(currentCursor.zw, boxSizeFull, SWEEP_LENGTH), currentCursor.zw, shrinkFactor);
+        vec2 animCenter = mix(mix(centerCC, boxCenterFull, SWEEP_LENGTH), centerCC, shrinkFactor);
+        float sdfRect = getSdfRectangle(vu, animCenter, animSize * 0.5);
+
+        float sdfSweep = mix(sdfDiag, sdfRect, isStraightMove);
+        newColor = mix(newColor, vec4(TRAIL_COLOR.rgb, newColor.a), TRAIL_COLOR.a * antialising(sdfSweep, SWEEP_BLUR));
+    }
+
+    // --- TAIL TRAIL ---
+    if (TAIL_ENABLED > 0.5 && lineLength > currentCursor.w * TAIL_THRESHOLD_MIN_DISTANCE && sinceMove < TAIL_DURATION) {
+        float tProgress = clamp(sinceMove / TAIL_DURATION, 0.0, 1.0);
+        float tailDelayFactor = TAIL_MAX_LENGTH / lineLength;
+        float isLongMove = step(TAIL_MAX_LENGTH, lineLength);
+
+        float headEased = mix(1.0, ease(tProgress), isLongMove);
+        float tailEased = mix(ease(tProgress), ease(smoothstep(tailDelayFactor, 1.0, tProgress)), isLongMove);
+
+        vec2 tDelta = abs(centerCC - centerCP);
+        float isStraightMove = max(step(tDelta.y, 0.001), step(tDelta.x, 0.001));
+
+        vec2 headPos = mix(previousCursor.xy, currentCursor.xy, headEased);
+        vec2 tailPos = mix(previousCursor.xy, currentCursor.xy, tailEased);
+
+        float trLeading = getTopVertexFlag(currentCursor.xy, previousCursor.xy);
+        float blLeading = 1.0 - trLeading;
+        vec2 v0 = vec2(headPos.x + currentCursor.z * trLeading, headPos.y - currentCursor.w);
+        vec2 v1 = vec2(headPos.x + currentCursor.z * blLeading, headPos.y);
+        vec2 v2 = vec2(tailPos.x + currentCursor.z * blLeading, tailPos.y);
+        vec2 v3 = vec2(tailPos.x + currentCursor.z * trLeading, tailPos.y - previousCursor.w);
+        float sdfDiag = getSdfParallelogram(vu, v0, v1, v2, v3);
+
+        vec2 headCenter = mix(centerCP, centerCC, headEased);
+        vec2 tailCenter = mix(centerCP, centerCC, tailEased);
+        vec2 minC = min(headCenter, tailCenter);
+        vec2 maxC = max(headCenter, tailCenter);
+        float sdfRect = getSdfRectangle(vu, (minC + maxC) * 0.5, ((maxC - minC) + currentCursor.zw) * 0.5);
+
+        float sdfTail = mix(sdfDiag, sdfRect, isStraightMove);
+        newColor = mix(newColor, vec4(TRAIL_COLOR.rgb, newColor.a), TRAIL_COLOR.a * antialising(sdfTail, TAIL_BLUR));
+    }
+
+    // punch hole on the trails, so the current cursor is drawn on top
+    newColor = mix(newColor, fragColor, step(sdfCurrentCursor, 0.));
 
     // --- CURSOR (drawn by the shader, native cursor is hidden via cursor-opacity = 0) ---
     bool isHollow = (iFocus == 0) || (iCurrentCursorStyle == CURSORSTYLE_BLOCK_HOLLOW);
