@@ -7,17 +7,39 @@ A single Ghostty shader that combines:
 - **Glide**: the cursor slides between cells (also while typing) instead of jumping.
 - Hollow outline cursor when the window is unfocused.
 
-## Setup
+## Requirements
 
-```ini
-cursor-style = bar          # block and underline also work
-cursor-style-blink = false  # the shader does the blinking
-cursor-opacity = 0          # hides the native cursor; the shader draws it
-custom-shader = /path/to/smooth_cursor.glsl
-custom-shader-animation = always
-```
+Ghostty 1.3 or newer (the shader uses `iCursorVisible` and `iCurrentCursorStyle`). On Linux, custom shaders need OpenGL 4.2.
 
-If the cursor disappears, remove the `custom-shader` line and set `cursor-opacity = 1`.
+## Installation
+
+1. Clone the repo into your Ghostty config folder:
+
+   ```sh
+   git clone https://github.com/4l3j0Ok/ghostty-smooth-cursor ~/.config/ghostty/shaders/ghostty-smooth-cursor
+   ```
+
+   On macOS, `~/.config/ghostty` also works.
+
+2. Add this to `~/.config/ghostty/config.ghostty`:
+
+   ```ini
+   cursor-style = bar          # block and underline also work
+   cursor-style-blink = false  # the shader does the blinking
+   cursor-opacity = 0          # hides the native cursor; the shader draws it
+   custom-shader = shaders/ghostty-smooth-cursor/smooth_cursor.glsl
+   custom-shader-animation = always
+   ```
+
+3. Check the config and reload it (`ctrl+shift+,` on Linux, `cmd+shift+,` on macOS). Shaders only affect new windows, tabs and splits.
+
+   ```sh
+   ghostty +validate-config
+   ```
+
+To update, run `git pull` inside the cloned folder.
+
+If the cursor disappears, remove the `custom-shader` line and set `cursor-opacity = 1`. Shader compile errors show up in Ghostty's logs (run `ghostty` from a terminal to see them).
 
 ## Tuning
 
